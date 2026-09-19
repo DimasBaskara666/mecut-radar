@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import tempfile
+from typing import Any
 import pytest
 import yaml
 
@@ -28,6 +29,7 @@ def test_load_default_config() -> None:
     assert len(config.categories) >= 5
     assert config.relevance.threshold >= 0
     assert config.runtime.max_age_hours > 0
+    assert config.runtime.notification_limit == 50
 
 
 def test_missing_config_file() -> None:
@@ -158,3 +160,63 @@ def test_secret_masking_filter() -> None:
     assert "my-super-secret-password" not in sanitized
     assert "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ123456789" not in sanitized
     assert "***REDACTED***" in sanitized
+
+
+def test_notification_limit_default_when_omitted(tmp_path: Path) -> None:
+    """Test that notification_limit defaults to 50 when omitted in YAML."""
+    kw_file = tmp_path / "keywords.yaml"
+    kw_data = {
+        "categories": {"AI": {"keywords": ["artificial intelligence"]}},
+        "relevance": {"threshold": 3},
+        "runtime": {"max_age_hours": 24, "dry_run": True},
+    }
+    kw_file.write_text(yaml.dump(kw_data), encoding="utf-8")
+    config = load_config(keywords_path=kw_file, require_telegram=False)
+    assert config.runtime.notification_limit == 50
+
+
+def test_notification_limit_yaml_configured(tmp_path: Path) -> None:
+    """Test that notification_limit is properly read from YAML."""
+    kw_file = tmp_path / "keywords.yaml"
+    kw_data = {
+        "categories": {"AI": {"keywords": ["artificial intelligence"]}},
+        "relevance": {"threshold": 3},
+        "runtime": {"max_age_hours": 24, "dry_run": True, "notification_limit": 10},
+    }
+    kw_file.write_text(yaml.dump(kw_data), encoding="utf-8")
+    config = load_config(keywords_path=kw_file, require_telegram=False)
+    assert config.runtime.notification_limit == 10
+
+
+@pytest.mark.parametrize("bad_val", [0, -5, "ten", 10.5, True, False])
+def test_notification_limit_invalid_values(tmp_path: Path, bad_val: Any) -> None:
+    """Test error when notification_limit in YAML is zero, negative, float, bool, or non-integer."""
+    kw_file = tmp_path / "keywords.yaml"
+    kw_data = {
+        "categories": {"AI": {"keywords": ["artificial intelligence"]}},
+        "relevance": {"threshold": 3},
+        "runtime": {"notification_limit": bad_val},
+    }
+    kw_file.write_text(yaml.dump(kw_data), encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="'notification_limit' must be a positive integer"):
+        load_config(keywords_path=kw_file, require_telegram=False)
+
+
+def test_notification_limit_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test valid NOTIFICATION_LIMIT environment variable override."""
+    monkeypatch.setenv("NOTIFICATION_LIMIT", "1")
+    config = load_config(require_telegram=False)
+    assert config.runtime.notification_limit == 1
+
+
+@pytest.mark.parametrize("bad_env", ["0", "-3", "not_a_number", "1.5"])
+def test_notification_limit_invalid_env_override(
+    monkeypatch: pytest.MonkeyPatch, bad_env: str
+) -> None:
+    """Test error when NOTIFICATION_LIMIT environment variable is invalid."""
+    monkeypatch.setenv("NOTIFICATION_LIMIT", bad_env)
+    with pytest.raises(
+        ConfigurationError,
+        match="NOTIFICATION_LIMIT environment variable must be a positive integer",
+    ):
+        load_config(require_telegram=False)

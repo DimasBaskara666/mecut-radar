@@ -166,3 +166,4 @@ relevance:
 runtime:
   max_age_hours: 48
   dry_run: true
+  notification_limit: 50

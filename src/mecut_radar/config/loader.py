@@ -93,6 +93,7 @@ class RuntimeConfig:
     max_age_hours: int = 48
     dry_run: bool = True
     database_path: str = "data/mecut_radar.db"
+    notification_limit: int = 50
 
 
 @dataclass
@@ -416,11 +417,35 @@ def _validate_keywords(
     if env_db_path:
         db_path = env_db_path.strip()
 
+    raw_notif_limit = runtime_raw.get("notification_limit", 50)
+    if (
+        isinstance(raw_notif_limit, bool)
+        or not isinstance(raw_notif_limit, int)
+        or raw_notif_limit <= 0
+    ):
+        raise ConfigurationError(
+            f"'notification_limit' must be a positive integer, got {raw_notif_limit!r}"
+        )
+    notification_limit = raw_notif_limit
+
+    env_notif_limit = os.environ.get("NOTIFICATION_LIMIT")
+    if env_notif_limit is not None:
+        try:
+            parsed_limit = int(env_notif_limit.strip())
+            if parsed_limit <= 0:
+                raise ValueError
+            notification_limit = parsed_limit
+        except ValueError:
+            raise ConfigurationError(
+                f"NOTIFICATION_LIMIT environment variable must be a positive integer, got {env_notif_limit!r}"
+            )
+
     runtime = RuntimeConfig(
         environment=environment,
         max_age_hours=int(max_age_hours),
         dry_run=dry_run,
         database_path=db_path,
+        notification_limit=notification_limit,
     )
 
     return categories, relevance, runtime

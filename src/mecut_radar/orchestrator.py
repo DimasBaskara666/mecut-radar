@@ -206,7 +206,8 @@ class Orchestrator:
 
         # 4. Select unsent relevant articles
         unsent_articles = self.db.get_unsent_articles(
-            min_score=self.config.relevance.threshold
+            min_score=self.config.relevance.threshold,
+            limit=self.config.runtime.notification_limit,
         )
         summary.eligible_for_notification = len(unsent_articles)
         logger.info(

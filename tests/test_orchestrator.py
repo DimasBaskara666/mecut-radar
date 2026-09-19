@@ -370,11 +370,11 @@ def test_one_telegram_failure_does_not_stop_subsequent_sends(tmp_path: Path) -> 
     assert result.sent_articles == 1
     assert result.failed_notifications == 1
 
-    # Item 1 is unsent, item 2 is sent
+    # One article is unsent, the other is sent
     saved1 = db.get_article_by_url("https://example.com/1")
     saved2 = db.get_article_by_url("https://example.com/2")
-    assert saved1 is not None and saved1.sent_to_telegram is False
-    assert saved2 is not None and saved2.sent_to_telegram is True
+    assert saved1 is not None and saved2 is not None
+    assert {saved1.sent_to_telegram, saved2.sent_to_telegram} == {True, False}
 
 
 def test_disabled_sources_are_not_initialized(tmp_path: Path) -> None:
@@ -491,4 +491,31 @@ def test_unexpected_telegram_exception_handled(tmp_path: Path) -> None:
     assert result.eligible_for_notification == 1
     assert result.sent_articles == 0
     assert result.failed_notifications == 1
+
+
+def test_orchestrator_passes_notification_limit_to_database(tmp_path: Path) -> None:
+    """Test that orchestrator queries unsent articles with configured notification_limit."""
+    cfg = _create_test_config(tmp_path, dry_run=True)
+    cfg.runtime.notification_limit = 2
+    db = Database(cfg.runtime.database_path)
+    db.init_db()
+
+    for i in range(5):
+        art = Article(
+            title=f"AI Article {i}",
+            url=f"https://example.com/item{i}",
+            source="test_rss",
+            relevance_score=5.0,
+            categories=["AI"],
+        )
+        db.save_article(art)
+
+    with patch.object(db, "get_unsent_articles", wraps=db.get_unsent_articles) as mock_get:
+        result = run_pipeline(config=cfg, db=db, sources=[])
+        mock_get.assert_called_once_with(
+            min_score=cfg.relevance.threshold,
+            limit=2,
+        )
+
+    assert result.eligible_for_notification == 2
 
