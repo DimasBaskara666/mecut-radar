@@ -1,0 +1,168 @@
+# MECUT Radar relevance configuration
+#
+# This file contains deterministic keyword/category rules.
+# Matching behavior is implemented in Python.
+#
+# Keep keywords reasonably specific. Very short terms can create
+# false positives when naive substring matching is used.
+
+categories:
+  AI:
+    keywords:
+      - artificial intelligence
+      - artificial general intelligence
+      - generative ai
+      - generative artificial intelligence
+      - large language model
+      - large language models
+      - llm
+      - llms
+      - multimodal
+      - ai agent
+      - ai agents
+      - agentic ai
+      - foundation model
+      - foundation models
+      - text-to-image
+      - text-to-video
+      - speech recognition
+      - speech generation
+
+  ML:
+    keywords:
+      - machine learning
+      - deep learning
+      - neural network
+      - neural networks
+      - transformer
+      - transformers
+      - computer vision
+      - natural language processing
+      - nlp
+      - reinforcement learning
+      - fine-tuning
+      - embeddings
+
+  Programming:
+    keywords:
+      - python
+      - javascript
+      - typescript
+      - rust
+      - golang
+      - java
+      - c++
+      - c#
+      - php
+      - programming language
+      - compiler
+      - interpreter
+
+  Software Development:
+    keywords:
+      - software development
+      - software engineering
+      - developer tools
+      - developer experience
+      - framework
+      - frameworks
+      - library
+      - libraries
+      - sdk
+      - api
+      - ide
+      - code editor
+      - testing
+      - debugging
+      - version control
+
+  Open Source:
+    keywords:
+      - open source
+      - open-source
+      - open source software
+      - github
+      - gitlab
+      - self-hosted
+
+  Cybersecurity:
+    keywords:
+      - cybersecurity
+      - cyber security
+      - information security
+      - vulnerability
+      - vulnerabilities
+      - exploit
+      - exploits
+      - malware
+      - ransomware
+      - security research
+      - zero-day
+      - zero day
+      - authentication
+      - data breach
+
+  Cloud / Infrastructure:
+    keywords:
+      - cloud computing
+      - cloud infrastructure
+      - kubernetes
+      - docker
+      - container
+      - containers
+      - serverless
+      - infrastructure
+      - devops
+      - platform engineering
+      - observability
+      - distributed systems
+
+  General Technology:
+    keywords:
+      - technology
+      - computing
+      - software
+      - hardware
+      - processor
+      - cpu
+      - gpu
+      - semiconductor
+      - database
+      - operating system
+      - linux
+      - windows
+      - macos
+
+  Gaming Technology:
+    keywords:
+      - game engine
+      - game development
+      - graphics engine
+      - rendering
+      - unreal engine
+      - unity
+      - godot
+      - graphics processing
+      - game technology
+
+  Research:
+    keywords:
+      - research
+      - research paper
+      - academic paper
+      - arxiv
+      - benchmark
+      - dataset
+      - scientific computing
+
+relevance:
+  threshold: 3
+
+  weights:
+    title_match: 3
+    description_match: 1
+    category_match: 1
+
+runtime:
+  max_age_hours: 48
+  dry_run: true

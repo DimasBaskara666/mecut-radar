@@ -1,0 +1,51 @@
+# MECUT Radar source configuration
+#
+# This file contains non-secret source settings.
+# Do not place API keys, bot tokens, passwords, or other credentials here.
+
+rss:
+  - name: ars_technica
+    enabled: true
+    url: "https://feeds.arstechnica.com/arstechnica/index"
+    categories:
+      - technology
+    timeout_seconds: 15
+    max_items: 30
+
+  - name: techcrunch
+    enabled: true
+    url: "https://techcrunch.com/feed/"
+    categories:
+      - ai
+      - technology
+      - startups
+    timeout_seconds: 15
+    max_items: 30
+
+hackernews:
+  enabled: true
+
+  # Number of story IDs considered from the configured HN feed.
+  max_items: 50
+
+  # Initial feed used by the adapter.
+  # Supported values should be implemented explicitly by the adapter.
+  story_feed: "newstories"
+
+  timeout_seconds: 15
+
+github:
+  enabled: true
+
+  # Public repository search queries.
+  # Keep the initial set small and tune after observing result quality.
+  queries:
+    - "artificial intelligence"
+    - "machine learning"
+    - "generative ai"
+    - "developer tools"
+    - "open source developer tools"
+    - "python framework"
+
+  max_results_per_query: 20
+  timeout_seconds: 15
