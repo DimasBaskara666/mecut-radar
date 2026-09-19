@@ -61,6 +61,7 @@ jobs:
         env:
           DRY_RUN: "false"
           APP_ENV: "production"
+          NOTIFICATION_LIMIT: "1"
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
