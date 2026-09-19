@@ -89,3 +89,5 @@ def test_workflow_steps_structure() -> None:
     assert "db-state" in persist_cmd
     assert "git commit-tree" in persist_cmd
     assert "git push origin" in persist_cmd
+    assert 'rm -f "$TMP_INDEX"' in persist_cmd
+    assert "trap" in persist_cmd

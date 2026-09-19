@@ -114,6 +114,8 @@ jobs:
 
           # Use an isolated temporary index to avoid touching working tree or main index
           TMP_INDEX=$(mktemp)
+          rm -f "$TMP_INDEX"
+          trap 'rm -f "$TMP_INDEX"' EXIT
           export GIT_INDEX_FILE="$TMP_INDEX"
 
           git add -f data/mecut_radar.db
