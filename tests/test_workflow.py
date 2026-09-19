@@ -72,7 +72,7 @@ def test_workflow_steps_structure() -> None:
     env = run_step.get("env", {})
     assert env.get("DRY_RUN") == "false"
     assert env.get("APP_ENV") == "production"
-    assert env.get("NOTIFICATION_LIMIT") == "1"
+    assert env.get("NOTIFICATION_LIMIT") == "50"
     assert "TELEGRAM_BOT_TOKEN" in env
     assert "TELEGRAM_CHAT_ID" in env
     assert "GITHUB_TOKEN" in env
