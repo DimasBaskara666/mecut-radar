@@ -62,6 +62,11 @@ def test_workflow_steps_structure() -> None:
     assert any("Checkpoint SQLite" in name for name in step_names)
     assert any("Persist database" in name for name in step_names)
 
+    # Verify Install dependencies step includes editable install
+    install_step = next(s for s in steps if "Install dependencies" in s.get("name", ""))
+    install_cmd = install_step.get("run", "")
+    assert "pip install -e ." in install_cmd
+
     # Verify Run MECUT Radar step environment
     run_step = next(s for s in steps if "Run MECUT Radar" in s.get("name", ""))
     env = run_step.get("env", {})
