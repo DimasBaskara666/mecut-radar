@@ -1,0 +1,141 @@
+name: MECUT Radar
+
+'on':
+  schedule:
+    # Run every 3 hours at minute 23 to avoid peak top-of-hour scheduling contention
+    - cron: "23 */3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: mecut-radar-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  radar:
+    name: Run Radar Pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout application repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore SQLite database from db-state
+        run: |
+          mkdir -p data
+          if git ls-remote --exit-code --heads origin db-state > /dev/null 2>&1; then
+            echo "Found existing 'db-state' branch on remote. Fetching latest state..."
+            git fetch origin db-state:refs/remotes/origin/db-state --depth 1
+            if git show origin/db-state:data/mecut_radar.db > data/mecut_radar.db; then
+              echo "Successfully restored data/mecut_radar.db from db-state."
+            else
+              echo "Warning: data/mecut_radar.db not found on db-state branch. Fresh database will be created."
+              rm -f data/mecut_radar.db
+            fi
+          else
+            echo "Branch 'db-state' does not exist yet. A fresh database will be initialized."
+          fi
+
+          if [ -f data/mecut_radar.db ]; then
+            echo "PRE_RUN_HASH=$(sha256sum data/mecut_radar.db | awk '{print $1}')" >> "$GITHUB_ENV"
+          else
+            echo "PRE_RUN_HASH=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run MECUT Radar
+        env:
+          DRY_RUN: "false"
+          APP_ENV: "production"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python -m mecut_radar.main
+
+      - name: Checkpoint SQLite WAL and verify integrity
+        run: |
+          python - << 'EOF'
+          import os
+          import sqlite3
+          import sys
+
+          db_path = "data/mecut_radar.db"
+          if not os.path.isfile(db_path):
+              print(f"Error: Database file not found at {db_path}", file=sys.stderr)
+              sys.exit(1)
+
+          conn = sqlite3.connect(db_path)
+          try:
+              cursor = conn.cursor()
+              cursor.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+              checkpoint_status = cursor.fetchone()
+              print(f"SQLite WAL checkpoint status: {checkpoint_status}")
+
+              cursor.execute("PRAGMA integrity_check;")
+              row = cursor.fetchone()
+              if not row or row[0] != "ok":
+                  print(f"Database integrity check failed: {row}", file=sys.stderr)
+                  sys.exit(1)
+              print("Database integrity check passed: ok")
+          finally:
+              conn.close()
+          EOF
+
+      - name: Persist database snapshot to db-state
+        run: |
+          POST_RUN_HASH=$(sha256sum data/mecut_radar.db | awk '{print $1}')
+          if [ -n "$PRE_RUN_HASH" ] && [ "$PRE_RUN_HASH" = "$POST_RUN_HASH" ]; then
+            echo "Database state is unchanged ($POST_RUN_HASH). Skipping push to db-state."
+            exit 0
+          fi
+
+          echo "Database modified or newly initialized (hash: $POST_RUN_HASH). Staging root snapshot..."
+
+          # Configure Git identity for state commit
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Use an isolated temporary index to avoid touching working tree or main index
+          TMP_INDEX=$(mktemp)
+          export GIT_INDEX_FILE="$TMP_INDEX"
+
+          git add -f data/mecut_radar.db
+          TREE_ID=$(git write-tree)
+          COMMIT_ID=$(git commit-tree "$TREE_ID" -m "Update MECUT Radar database state [skip ci]")
+
+          rm -f "$TMP_INDEX"
+          unset GIT_INDEX_FILE
+
+          # Retry push up to 3 attempts
+          PUSH_SUCCESS=false
+          for attempt in 1 2 3; do
+            echo "Pushing database state to db-state (attempt $attempt/3)..."
+            if git push origin "$COMMIT_ID:refs/heads/db-state" --force; then
+              PUSH_SUCCESS=true
+              echo "Successfully pushed database state snapshot to db-state."
+              break
+            else
+              echo "Push failed. Waiting before retry..."
+              sleep $((attempt * 3))
+            fi
+          done
+
+          if [ "$PUSH_SUCCESS" != "true" ]; then
+            echo "Error: Failed to push database state to db-state after 3 attempts." >&2
+            exit 1
+          fi
