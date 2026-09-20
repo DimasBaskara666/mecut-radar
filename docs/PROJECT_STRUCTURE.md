@@ -1,4 +1,4 @@
-# MECUT Radar — Project Structure Specification v0.1
+# MECUT Radar: Project Structure Specification v0.1
 
 ## 1. Purpose
 
@@ -14,7 +14,7 @@ Do not introduce additional infrastructure, frameworks, services, or abstraction
 
 ## 2. Target Project Structure
 
-The intended MVP structure is:
+The project structure is:
 
 ```text
 mecut-radar/
@@ -39,7 +39,9 @@ mecut-radar/
 ├── src/
 │   └── mecut_radar/
 │       ├── __init__.py
+│       ├── logging_config.py
 │       ├── main.py
+│       ├── orchestrator.py
 │       │
 │       ├── config/
 │       │   ├── __init__.py
@@ -73,14 +75,21 @@ mecut-radar/
 │
 ├── tests/
 │   ├── __init__.py
+│   ├── test_article.py
 │   ├── test_config.py
-│   ├── test_normalize.py
+│   ├── test_database.py
 │   ├── test_deduplicate.py
+│   ├── test_formatter.py
+│   ├── test_github.py
+│   ├── test_hackernews.py
+│   ├── test_main.py
+│   ├── test_normalize.py
+│   ├── test_orchestrator.py
 │   ├── test_relevance.py
 │   ├── test_rss.py
-│   ├── test_hackernews.py
-│   ├── test_github.py
-│   └── test_formatter.py
+│   ├── test_source_base.py
+│   ├── test_telegram.py
+│   └── test_workflow.py
 │
 ├── .env.example
 ├── .gitignore
@@ -89,7 +98,7 @@ mecut-radar/
 └── pyproject.toml
 ```
 
-The exact test files may change as implementation develops, but the separation of responsibilities should remain.
+All source code, test suites, and automation files correspond directly to the active production implementation.
 
 ---
 
@@ -288,11 +297,11 @@ data/
 └── mecut_radar.db
 ```
 
-The database should not be committed to Git.
+The local database file (`data/mecut_radar.db`) is ignored on the `main` branch via `.gitignore` and must never be committed to `main`.
 
-The directory itself may remain in the repository through `.gitkeep`.
+The directory itself remains in the repository through `.gitkeep`.
 
-GitHub Actions should treat the local SQLite database as ephemeral unless persistent storage is explicitly introduced later.
+For GitHub Actions runs, persistent cross-run state is maintained using a dedicated orphan branch named `db-state`. Before execution, the workflow restores `data/mecut_radar.db` from `origin/db-state`. After execution and WAL checkpoint verification, the workflow commits the updated database snapshot back to `db-state`.
 
 ---
 
@@ -316,19 +325,25 @@ src/mecut_radar/
 
 ---
 
-# 8. Entry Point
+# 8. Entry Point and Orchestration
 
 ## `main.py`
 
-Responsible for starting the application.
+Responsible for CLI startup and runtime initialization:
 
-Conceptual flow:
+1. Configures logging via `logging_config.py`.
+2. Loads and validates configuration via `config/loader.py`.
+3. Verifies SQLite database initialization via `storage/database.py`.
+4. Logs foundation readiness.
+5. If running in full mode (invoked directly without flags, or with `--run`/`--pipeline`), invokes `orchestrator.py` to execute the pipeline.
+
+It does not contain source parsing, filtering rules, SQL statements, or notification formatting.
+
+## `orchestrator.py`
+
+Responsible for coordinating pipeline execution:
 
 ```text
-load configuration
-      ↓
-initialize services
-      ↓
 fetch sources
       ↓
 normalize
@@ -344,18 +359,15 @@ notify
 finish
 ```
 
-`main.py` should orchestrate the workflow.
+The orchestrator instantiates source adapters, normalizes raw items, detects duplicates against the database, evaluates relevance scores, persists articles into SQLite, and dispatches unsent articles to Telegram up to the configured `notification_limit`.
 
-It should NOT contain:
+## `logging_config.py`
 
-- RSS parsing logic
-- Hacker News API logic
-- GitHub API logic
-- keyword matching implementation
-- SQL queries
-- Telegram message formatting
+Responsible for centralized logging:
 
-Those responsibilities belong to dedicated modules.
+- Configures console handlers and formatting.
+- Sets log levels based on environment (`APP_ENV`).
+- Registers and masks sensitive tokens (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `GITHUB_TOKEN`) so credentials never appear in log output.
 
 ---
 
@@ -633,41 +645,56 @@ The decision to notify belongs to the orchestration pipeline.
 
 ## `tests/`
 
-Contains automated tests.
-
-Tests should focus on deterministic behavior.
-
-Recommended initial tests:
+Contains automated tests focusing on deterministic behavior:
 
 ```text
-test_config.py
-    configuration loading and validation
+test_article.py
+    article model data validation, hashing, and dict conversion
 
-test_normalize.py
-    URL/text/timestamp normalization
+test_config.py
+    YAML parsing, schema validation, and environment variable overrides
+
+test_database.py
+    SQLite schema initialization, duplicate queries, and transaction handling
 
 test_deduplicate.py
-    duplicate detection
-
-test_relevance.py
-    keyword matching and scoring
-
-test_rss.py
-    RSS parsing
-
-test_hackernews.py
-    Hacker News response parsing
-
-test_github.py
-    GitHub response parsing
+    in-memory and database-backed duplicate detection
 
 test_formatter.py
-    Telegram message formatting
+    Telegram message formatting, field rendering, and character limits
+
+test_github.py
+    GitHub Search API response parsing, pagination, and repository conversion
+
+test_hackernews.py
+    Hacker News Firebase API item retrieval and response parsing
+
+test_main.py
+    CLI entry point execution, argument handling, and exit codes
+
+test_normalize.py
+    URL cleaning, whitespace normalization, and ISO timestamp formatting
+
+test_orchestrator.py
+    pipeline flow coordination, error recovery, and notification limits
+
+test_relevance.py
+    keyword matching, category weighting, and threshold scoring
+
+test_rss.py
+    RSS/Atom feed parsing, field extraction, and error handling
+
+test_source_base.py
+    base source adapter interface and contract compliance
+
+test_telegram.py
+    Telegram Bot API HTTP client, error handling, and message delivery
+
+test_workflow.py
+    GitHub Actions workflow YAML validation, schedule, and step sequence
 ```
 
-Network-dependent tests should avoid unnecessary live API calls.
-
-Use representative fixtures/mocked responses where appropriate.
+All 16 test files use deterministic fixtures and mocked network responses. Live network access is not required for running the test suite.
 
 ---
 
@@ -675,29 +702,37 @@ Use representative fixtures/mocked responses where appropriate.
 
 ## `.github/workflows/radar.yml`
 
-Responsible for scheduled execution.
+Responsible for scheduled and on-demand cloud execution.
 
-Conceptual flow:
+Execution flow:
 
 ```text
-GitHub Actions schedule
-        ↓
-checkout repository
-        ↓
-install Python dependencies
-        ↓
-load repository secrets
-        ↓
-run MECUT Radar
-        ↓
-logs
+GitHub Actions schedule ("23 */3 * * *") or workflow_dispatch
+                            ↓
+             checkout repository (ref: main)
+                            ↓
+                    set up Python 3.11
+                            ↓
+           install dependencies (pip install -e .)
+                            ↓
+             restore SQLite database from db-state
+                            ↓
+         run MECUT Radar (python -m mecut_radar.main)
+                            ↓
+         checkpoint SQLite WAL & check integrity
+                            ↓
+        persist database snapshot to db-state branch
 ```
 
-The workflow should not contain business logic.
+Key operational details:
 
-Business logic belongs in Python.
-
-The workflow should only handle execution environment and scheduling.
+- **Schedule**: Cron `"23 */3 * * *"` runs every 3 hours at minute 23.
+- **Manual trigger**: `workflow_dispatch` allows on-demand execution from GitHub Actions.
+- **Concurrency**: Group `mecut-radar-pipeline` with `cancel-in-progress: false` serializes executions to prevent concurrent database writes.
+- **Package installation**: Runs `pip install -e .` so that `src/mecut_radar` is importable as a module.
+- **State restoration**: Checks `origin/db-state` for `data/mecut_radar.db` and restores it before pipeline execution.
+- **Integrity check**: Flushes the WAL log with `PRAGMA wal_checkpoint(TRUNCATE);` and checks integrity with `PRAGMA integrity_check;`.
+- **Orphan state commit**: If the database file changed, stages `data/mecut_radar.db` using an isolated temporary Git index, creates an orphan root commit with `git commit-tree`, and force-pushes to `refs/heads/db-state`.
 
 ---
 
@@ -770,18 +805,20 @@ The following boundaries are intentional:
 
 | Component | Responsible for | Not responsible for |
 |---|---|---|
-| `main.py` | orchestration | source-specific logic |
-| `loader.py` | configuration | business processing |
-| `article.py` | data model | API calls |
-| `rss.py` | RSS ingestion | Telegram |
-| `hackernews.py` | HN ingestion | relevance |
-| `github.py` | GitHub ingestion | persistence |
-| `normalize.py` | normalization | source fetching |
-| `deduplicate.py` | duplicate detection | notification |
-| `relevance.py` | scoring/filtering | API communication |
-| `database.py` | persistence | source parsing |
-| `formatter.py` | message formatting | Telegram transport |
-| `telegram.py` | Telegram delivery | relevance decisions |
+| `main.py` | CLI startup and foundation verification | pipeline orchestration |
+| `orchestrator.py` | pipeline flow coordination | source-specific fetching or parsing |
+| `logging_config.py` | centralized logging and secret masking | business processing |
+| `loader.py` | configuration loading and validation | business processing |
+| `article.py` | data model and representation | API calls or persistence |
+| `rss.py` | RSS/Atom ingestion | Telegram or filtering |
+| `hackernews.py` | Hacker News ingestion | relevance or storage |
+| `github.py` | GitHub repository ingestion | persistence or notifications |
+| `normalize.py` | field and URL normalization | source fetching |
+| `deduplicate.py` | duplicate detection | notifications |
+| `relevance.py` | keyword scoring and filtering | API communication |
+| `database.py` | SQLite persistence and queries | source parsing or formatting |
+| `formatter.py` | Telegram message formatting | Telegram transport |
+| `telegram.py` | Telegram delivery and HTTP requests | relevance decisions |
 
 A module should not absorb another module's responsibility simply because it is convenient.
 
@@ -1124,79 +1161,62 @@ SQLite is sufficient for the MVP.
 
 ---
 
-# 31. Implementation Order
+# 31. Implementation Status
 
-Antigravity should implement the project in this order:
+Implementation progress across project phases:
 
-### Phase 1 — Foundation
+### Phase 1: Foundation (Completed)
 
-```text
-project structure
-configuration loader
-Article model
-logging
-```
+- Repository structure and packaging configuration (`pyproject.toml`, `requirements.txt`).
+- Article data model (`models/article.py`).
+- Configuration loader and validation (`config/loader.py`).
+- Centralized logging with secret masking (`logging_config.py`).
 
-### Phase 2 — Storage
+### Phase 2: Storage (Completed)
 
-```text
-SQLite database
-database initialization
-article persistence
-duplicate lookup
-```
+- SQLite database management (`storage/database.py`).
+- Schema initialization and indexing.
+- Article persistence and duplicate lookup methods.
+- Sent state tracking (`sent_to_telegram`, `sent_at`).
 
-### Phase 3 — Processing
+### Phase 3: Processing (Completed)
 
-```text
-normalization
-deduplication
-category matching
-relevance scoring
-```
+- URL, text, and timestamp normalization (`processing/normalize.py`).
+- Exact and content-hash deduplication (`processing/deduplicate.py`).
+- Deterministic keyword matching and relevance scoring (`processing/relevance.py`).
 
-### Phase 4 — Sources
+### Phase 4: Sources (Completed)
 
-```text
-RSS
-Hacker News
-GitHub
-```
+- Base source adapter contract (`sources/base.py`).
+- RSS/Atom feed adapter (`sources/rss.py`).
+- Hacker News Firebase REST adapter (`sources/hackernews.py`).
+- GitHub Search REST adapter (`sources/github.py`).
 
-### Phase 5 — Notifications
+### Phase 5: Notifications (Completed)
 
-```text
-Telegram formatter
-Telegram client
-notification flow
-```
+- Telegram message formatting with HTML tags (`notifications/formatter.py`).
+- Telegram Bot API client with retry and error handling (`notifications/telegram.py`).
 
-### Phase 6 — Orchestration
+### Phase 6: Orchestration (Completed)
 
-```text
-main.py
-complete pipeline
-error handling
-dry-run mode
-```
+- Pipeline orchestrator (`orchestrator.py`).
+- CLI entry point and startup checks (`main.py`).
+- Dry-run execution mode.
+- Batch notification limit configuration (`notification_limit: 50`).
 
-### Phase 7 — Testing
+### Phase 7: Verification and Cloud Automation (Completed)
 
-```text
-unit tests
-integration tests
-manual end-to-end test
-```
+- 183 automated tests with 92% statement coverage.
+- End-to-end local dry-run and live delivery verification.
+- GitHub Actions scheduled workflow (`.github/workflows/radar.yml`).
+- Zero-cost (Rp0) SQLite persistence on dedicated orphan `db-state` branch.
+- WAL checkpointing and integrity verification.
 
-### Phase 8 — Automation
+### Phase 8: Production Operations and Runbook (Current)
 
-```text
-GitHub Actions
-scheduled execution
-repository secrets
-```
-
-This order keeps failures easy to isolate.
+- Comprehensive project documentation and operations guide (`README.md`).
+- Accurate architectural specification (`docs/PROJECT_STRUCTURE.md`).
+- Runbook procedures for manual dispatch and failure troubleshooting.
 
 ---
 
