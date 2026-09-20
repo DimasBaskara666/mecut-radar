@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import email.utils
 import hashlib
 import html
@@ -256,3 +256,74 @@ def normalize_article(raw: RawArticle) -> Article:
         relevance_score=0.0,
         sent_to_telegram=False,
     )
+
+
+def is_article_fresh(
+    item: Article | RawArticle | Optional[datetime],
+    max_age_hours: int | float,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Determine if an article or timestamp is within the allowable max age.
+
+    Filtering rules:
+    - If published_at is None, the article is preserved (returns True).
+    - If published_at is timezone-naive, it is treated as UTC in accordance
+      with the project's normalization convention (replace tzinfo=timezone.utc).
+    - If published_at is timezone-aware, it is converted to UTC.
+    - Reference time 'now' defaults to datetime.now(timezone.utc). Naive 'now' is treated as UTC.
+    - An article is fresh if published_at >= cutoff, where
+      cutoff = now - timedelta(hours=max_age_hours).
+    - An article older than max_age_hours (published_at < cutoff) returns False.
+    - An article at the exact cutoff boundary returns True.
+
+    Args:
+        item: Article, RawArticle, datetime object, or None.
+        max_age_hours: Maximum allowable age in hours (must be positive).
+        now: Optional reference datetime for deterministic evaluation.
+
+    Returns:
+        True if fresh or published_at is None; False if older than max_age_hours.
+
+    Raises:
+        ValueError: If max_age_hours is not positive.
+    """
+    if max_age_hours <= 0:
+        raise ValueError(
+            f"max_age_hours must be a positive number, got {max_age_hours}"
+        )
+
+    if isinstance(item, (Article, RawArticle)):
+        pub_at = item.published_at
+    else:
+        pub_at = item
+
+    if pub_at is None:
+        return True
+
+    # Normalize published_at to UTC aware datetime
+    if isinstance(pub_at, datetime):
+        if pub_at.tzinfo is None:
+            pub_utc = pub_at.replace(tzinfo=timezone.utc)
+        else:
+            pub_utc = pub_at.astimezone(timezone.utc)
+    elif isinstance(pub_at, str):
+        pub_utc = normalize_timestamp(pub_at)
+        if pub_utc is None:
+            return True
+    else:
+        return True
+
+    # Determine reference 'now' in UTC
+    if now is None:
+        ref_now = datetime.now(timezone.utc)
+    elif isinstance(now, datetime):
+        if now.tzinfo is None:
+            ref_now = now.replace(tzinfo=timezone.utc)
+        else:
+            ref_now = now.astimezone(timezone.utc)
+    else:
+        ref_now = datetime.now(timezone.utc)
+
+    cutoff = ref_now - timedelta(hours=max_age_hours)
+    return pub_utc >= cutoff
+

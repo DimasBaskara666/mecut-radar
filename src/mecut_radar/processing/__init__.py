@@ -7,6 +7,7 @@ from mecut_radar.processing.deduplicate import (
 )
 from mecut_radar.processing.normalize import (
     compute_content_hash,
+    is_article_fresh,
     normalize_article,
     normalize_description,
     normalize_text,
@@ -28,6 +29,7 @@ __all__ = [
     "compute_content_hash",
     "deduplicate_batch",
     "evaluate_relevance",
+    "is_article_fresh",
     "match_keywords_in_text",
     "normalize_article",
     "normalize_description",

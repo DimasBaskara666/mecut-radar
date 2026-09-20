@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -23,7 +23,12 @@ from mecut_radar.config.loader import (
 )
 from mecut_radar.models.article import Article, RawArticle
 from mecut_radar.notifications.telegram import TelegramClient, TelegramError
-from mecut_radar.orchestrator import Orchestrator, OrchestratorResult, run_pipeline
+from mecut_radar.orchestrator import (
+    Orchestrator,
+    OrchestratorResult,
+    is_article_fresh,
+    run_pipeline,
+)
 from mecut_radar.sources.base import SourceAdapter, SourceError
 from mecut_radar.storage.database import Database
 
@@ -518,4 +523,153 @@ def test_orchestrator_passes_notification_limit_to_database(tmp_path: Path) -> N
         )
 
     assert result.eligible_for_notification == 2
+
+
+def test_pipeline_filters_stale_articles(tmp_path: Path) -> None:
+    """Test that articles older than max_age_hours are filtered by the pipeline."""
+    cfg = _create_test_config(tmp_path, dry_run=True)
+    cfg.runtime.max_age_hours = 48
+    db = Database(cfg.runtime.database_path)
+
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    fresh_art = RawArticle(
+        source="rss",
+        title="Fresh AI Framework Released",
+        url="https://example.com/fresh-ai",
+        published_at=now - timedelta(hours=6),
+    )
+    stale_art = RawArticle(
+        source="rss",
+        title="Stale AI Framework Released",
+        url="https://example.com/stale-ai",
+        published_at=now - timedelta(hours=60),
+    )
+    undated_art = RawArticle(
+        source="rss",
+        title="Undated AI Framework Released",
+        url="https://example.com/undated-ai",
+        published_at=None,
+    )
+
+    src = MockSource(articles=[fresh_art, stale_art, undated_art])
+    result = run_pipeline(config=cfg, db=db, sources=[src], now=now)
+
+    assert result.raw_articles == 3
+    assert result.processed_articles == 3
+    assert result.filtered_articles == 1  # only stale_art is filtered
+    assert result.persisted_articles == 2  # fresh_art and undated_art are persisted
+
+    assert db.get_article_by_url("https://example.com/fresh-ai") is not None
+    assert db.get_article_by_url("https://example.com/undated-ai") is not None
+    assert db.get_article_by_url("https://example.com/stale-ai") is None
+
+
+def test_pipeline_respects_configured_max_age_hours(tmp_path: Path) -> None:
+    """Test that max_age_hours configuration directly controls filtering threshold."""
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    art_30h_old = RawArticle(
+        source="rss",
+        title="AI Machine Learning Models",
+        url="https://example.com/item-30h",
+        published_at=now - timedelta(hours=30),
+    )
+
+    # 1. With max_age_hours = 24, the 30-hour-old article MUST be filtered
+    cfg24 = _create_test_config(tmp_path / "cfg24", dry_run=True)
+    cfg24.runtime.max_age_hours = 24
+    db24 = Database(cfg24.runtime.database_path)
+    res24 = run_pipeline(config=cfg24, db=db24, sources=[MockSource(articles=[art_30h_old])], now=now)
+
+    assert res24.processed_articles == 1
+    assert res24.filtered_articles == 1
+    assert res24.persisted_articles == 0
+
+    # 2. With max_age_hours = 48, the 30-hour-old article MUST be kept
+    cfg48 = _create_test_config(tmp_path / "cfg48", dry_run=True)
+    cfg48.runtime.max_age_hours = 48
+    db48 = Database(cfg48.runtime.database_path)
+    res48 = run_pipeline(config=cfg48, db=db48, sources=[MockSource(articles=[art_30h_old])], now=now)
+
+    assert res48.processed_articles == 1
+    assert res48.filtered_articles == 0
+    assert res48.persisted_articles == 1
+
+
+def test_pipeline_exact_boundary_determinism(tmp_path: Path) -> None:
+    """Test boundary condition determinism in the pipeline."""
+    cfg = _create_test_config(tmp_path, dry_run=True)
+    cfg.runtime.max_age_hours = 48
+    db = Database(cfg.runtime.database_path)
+
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    boundary_art = RawArticle(
+        source="rss",
+        title="Boundary AI Discovery",
+        url="https://example.com/boundary",
+        published_at=now - timedelta(hours=48),
+    )
+    just_stale_art = RawArticle(
+        source="rss",
+        title="Past Boundary AI Discovery",
+        url="https://example.com/just-stale",
+        published_at=now - timedelta(hours=48, seconds=1),
+    )
+
+    src = MockSource(articles=[boundary_art, just_stale_art])
+    result = run_pipeline(config=cfg, db=db, sources=[src], now=now)
+
+    assert result.raw_articles == 2
+    assert result.processed_articles == 2
+    assert result.filtered_articles == 1
+    assert result.persisted_articles == 1
+
+    assert db.get_article_by_url("https://example.com/boundary") is not None
+    assert db.get_article_by_url("https://example.com/just-stale") is None
+
+
+def test_pipeline_timezone_handling(tmp_path: Path) -> None:
+    """Test timezone-aware and timezone-naive timestamps in pipeline execution."""
+    cfg = _create_test_config(tmp_path, dry_run=True)
+    cfg.runtime.max_age_hours = 48
+    db = Database(cfg.runtime.database_path)
+
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+
+    # Timezone-aware article (+07:00 offset, 4 hours old in UTC)
+    tz_jakarta = timezone(timedelta(hours=7))
+    aware_fresh = RawArticle(
+        source="rss",
+        title="Aware AI Discovery",
+        url="https://example.com/aware-fresh",
+        published_at=datetime(2026, 9, 21, 15, 0, tzinfo=tz_jakarta),
+    )
+
+    # Timezone-naive article (treated as UTC, 5 hours old)
+    naive_fresh = RawArticle(
+        source="rss",
+        title="Naive AI Discovery",
+        url="https://example.com/naive-fresh",
+        published_at=datetime(2026, 9, 21, 7, 0),
+    )
+
+    # Timezone-naive stale (treated as UTC, 70 hours old)
+    naive_stale = RawArticle(
+        source="rss",
+        title="Naive Stale AI Discovery",
+        url="https://example.com/naive-stale",
+        published_at=datetime(2026, 9, 18, 14, 0),
+    )
+
+    src = MockSource(articles=[aware_fresh, naive_fresh, naive_stale])
+    result = run_pipeline(config=cfg, db=db, sources=[src], now=now)
+
+    assert result.raw_articles == 3
+    assert result.processed_articles == 3
+    assert result.filtered_articles == 1
+    assert result.persisted_articles == 2
+
+    assert db.get_article_by_url("https://example.com/aware-fresh") is not None
+    assert db.get_article_by_url("https://example.com/naive-fresh") is not None
+    assert db.get_article_by_url("https://example.com/naive-stale") is None
+
 

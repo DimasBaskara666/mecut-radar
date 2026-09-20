@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import pytest
 
-from mecut_radar.models.article import RawArticle
+from mecut_radar.models.article import Article, RawArticle
 from mecut_radar.processing.normalize import (
     compute_content_hash,
+    is_article_fresh,
     normalize_article,
     normalize_description,
     normalize_text,
@@ -155,3 +156,132 @@ def test_normalize_article() -> None:
     assert art.content_hash is not None
     assert len(art.content_hash) == 64
     assert art.sent_to_telegram is False
+
+
+def test_is_article_fresh_recent_kept() -> None:
+    """Test that recent articles within max_age_hours are kept."""
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    recent_dt = now - timedelta(hours=2)
+    art = Article(
+        title="Recent AI",
+        url="https://example.com/recent",
+        source="rss",
+        published_at=recent_dt,
+    )
+    assert is_article_fresh(art, max_age_hours=48, now=now) is True
+    assert is_article_fresh(recent_dt, max_age_hours=48, now=now) is True
+
+
+def test_is_article_fresh_exact_boundary() -> None:
+    """Test deterministic behavior exactly at boundary and just beyond."""
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    boundary_dt = now - timedelta(hours=48)
+    # Exactly at boundary: age == 48h, not older -> kept
+    assert is_article_fresh(boundary_dt, max_age_hours=48, now=now) is True
+
+    # 1 second older than boundary: age > 48h -> filtered
+    stale_dt = boundary_dt - timedelta(seconds=1)
+    assert is_article_fresh(stale_dt, max_age_hours=48, now=now) is False
+
+
+def test_is_article_fresh_stale_filtered() -> None:
+    """Test that articles older than max_age_hours are filtered out."""
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    old_dt = now - timedelta(hours=72)
+    art = Article(
+        title="Old AI",
+        url="https://example.com/old",
+        source="rss",
+        published_at=old_dt,
+    )
+    assert is_article_fresh(art, max_age_hours=48, now=now) is False
+    assert is_article_fresh(old_dt, max_age_hours=48, now=now) is False
+
+
+def test_is_article_fresh_none_preserved() -> None:
+    """Test that articles with published_at=None are always preserved."""
+    art = Article(
+        title="Undated AI",
+        url="https://example.com/undated",
+        source="rss",
+        published_at=None,
+    )
+    assert is_article_fresh(art, max_age_hours=48) is True
+    assert is_article_fresh(None, max_age_hours=48) is True
+
+
+def test_is_article_fresh_timezone_aware() -> None:
+    """Test that timezone-aware timestamps with various offsets are handled correctly."""
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+
+    # Offset +08:00: 20:00 local is 12:00 UTC (0 hours old)
+    tz_singapore = timezone(timedelta(hours=8))
+    dt_fresh_aware = datetime(2026, 9, 21, 20, 0, tzinfo=tz_singapore)
+    assert is_article_fresh(dt_fresh_aware, max_age_hours=48, now=now) is True
+
+    # Offset -05:00: 2026-09-18 07:00 local is 2026-09-18 12:00 UTC (72 hours old)
+    tz_eastern = timezone(timedelta(hours=-5))
+    dt_stale_aware = datetime(2026, 9, 18, 7, 0, tzinfo=tz_eastern)
+    assert is_article_fresh(dt_stale_aware, max_age_hours=48, now=now) is False
+
+
+def test_is_article_fresh_timezone_naive_convention() -> None:
+    """Test that naive datetimes are treated as UTC per project convention."""
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+
+    # Naive recent (2 hours old when assumed UTC)
+    dt_naive_fresh = datetime(2026, 9, 21, 10, 0)
+    assert is_article_fresh(dt_naive_fresh, max_age_hours=48, now=now) is True
+
+    # Naive stale (60 hours old when assumed UTC)
+    dt_naive_stale = datetime(2026, 9, 19, 0, 0)
+    assert is_article_fresh(dt_naive_stale, max_age_hours=48, now=now) is False
+
+
+def test_is_article_fresh_invalid_max_age() -> None:
+    """Test that zero or negative max_age_hours raises ValueError."""
+    with pytest.raises(ValueError):
+        is_article_fresh(datetime.now(timezone.utc), max_age_hours=0)
+
+    with pytest.raises(ValueError):
+        is_article_fresh(datetime.now(timezone.utc), max_age_hours=-5)
+
+
+def test_is_article_fresh_raw_article_and_default_now() -> None:
+    """Test is_article_fresh with RawArticle and default now=None."""
+    raw_fresh = RawArticle(
+        source="rss",
+        title="Raw Fresh",
+        url="https://example.com/raw",
+        published_at=datetime.now(timezone.utc),
+    )
+    assert is_article_fresh(raw_fresh, max_age_hours=48) is True
+
+
+def test_is_article_fresh_string_and_unknown_types() -> None:
+    """Test handling of string timestamps and unexpected types."""
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+
+    # Valid string timestamp
+    assert (
+        is_article_fresh("2026-09-21T10:00:00Z", max_age_hours=48, now=now)
+        is True
+    )
+
+    # Unparseable string timestamp is preserved
+    assert is_article_fresh("not-a-date", max_age_hours=48, now=now) is True
+
+    # Unknown type is preserved
+    assert is_article_fresh(12345, max_age_hours=48, now=now) is True
+
+
+def test_is_article_fresh_naive_now_and_fallback() -> None:
+    """Test naive now and fallback handling for now parameter."""
+    now_naive = datetime(2026, 9, 21, 12, 0)
+    dt_fresh = datetime(2026, 9, 21, 10, 0)
+    assert is_article_fresh(dt_fresh, max_age_hours=48, now=now_naive) is True
+
+    # Fallback if non-datetime is passed as now
+    assert is_article_fresh(datetime.now(timezone.utc), max_age_hours=48, now="invalid") is True
+
+

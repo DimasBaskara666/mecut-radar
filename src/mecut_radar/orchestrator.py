@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional, Sequence
 
 from mecut_radar.config.loader import AppConfig, load_config
@@ -11,7 +12,7 @@ from mecut_radar.models.article import Article, RawArticle
 from mecut_radar.notifications.formatter import PARSE_MODE, format_telegram_message
 from mecut_radar.notifications.telegram import TelegramClient, TelegramError
 from mecut_radar.processing.deduplicate import Deduplicator
-from mecut_radar.processing.normalize import normalize_article
+from mecut_radar.processing.normalize import is_article_fresh, normalize_article
 from mecut_radar.processing.relevance import evaluate_relevance
 from mecut_radar.sources.base import SourceAdapter, SourceError
 from mecut_radar.sources.github import GitHubSource
@@ -81,8 +82,11 @@ class Orchestrator:
 
         return adapters
 
-    def run(self) -> OrchestratorResult:
+    def run(self, now: Optional[datetime] = None) -> OrchestratorResult:
         """Execute the full ingestion and notification pipeline.
+
+        Args:
+            now: Optional reference datetime for deterministic freshness filtering.
 
         Returns:
             OrchestratorResult containing summary counts.
@@ -133,12 +137,28 @@ class Orchestrator:
                 if raw.metadata:
                     article.metadata = raw.metadata
 
+                summary.processed_articles += 1
+
+                # Freshness filtering: reject articles older than max_age_hours
+                if not is_article_fresh(
+                    article,
+                    max_age_hours=self.config.runtime.max_age_hours,
+                    now=now,
+                ):
+                    summary.filtered_articles += 1
+                    logger.debug(
+                        "Filtered out stale article '%s' (published_at=%s, max_age_hours=%s)",
+                        article.title,
+                        article.published_at,
+                        self.config.runtime.max_age_hours,
+                    )
+                    continue
+
                 result = evaluate_relevance(
                     article,
                     categories_config=self.config.categories,
                     relevance_config=self.config.relevance,
                 )
-                summary.processed_articles += 1
 
                 if not result.is_relevant:
                     summary.filtered_articles += 1
@@ -284,6 +304,7 @@ def run_pipeline(
     db: Optional[Database] = None,
     telegram_client: Optional[TelegramClient] = None,
     sources: Optional[list[SourceAdapter]] = None,
+    now: Optional[datetime] = None,
 ) -> OrchestratorResult:
     """Convenience function to execute the full MECUT Radar pipeline."""
     orchestrator = Orchestrator(
@@ -292,4 +313,12 @@ def run_pipeline(
         telegram_client=telegram_client,
         sources=sources,
     )
-    return orchestrator.run()
+    return orchestrator.run(now=now)
+
+
+__all__ = [
+    "Orchestrator",
+    "OrchestratorResult",
+    "is_article_fresh",
+    "run_pipeline",
+]
