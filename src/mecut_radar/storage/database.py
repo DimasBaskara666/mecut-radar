@@ -20,14 +20,24 @@ class StorageError(Exception):
 class Database:
     """SQLite database manager for article persistence and query operations."""
 
-    def __init__(self, db_path: Path | str = "data/mecut_radar.db") -> None:
+    def __init__(
+        self,
+        db_path: Path | str = "data/mecut_radar.db",
+        read_only: bool = False,
+    ) -> None:
         self.raw_path = str(db_path)
         self.is_memory = self.raw_path == ":memory:"
         self.db_path = ":memory:" if self.is_memory else Path(db_path)
+        self.read_only = read_only
         self._memory_conn: Optional[sqlite3.Connection] = None
 
-    def _get_raw_connection(self) -> sqlite3.Connection:
-        """Create or return an open SQLite connection with safe defaults."""
+    def _get_raw_connection(self, read_only: bool | None = None) -> sqlite3.Connection:
+        """Create or return an open SQLite connection with safe defaults.
+
+        When read_only is True, opens using SQLite URI mode=ro without WAL pragma.
+        """
+        is_ro = self.read_only if read_only is None else read_only
+
         if self.is_memory:
             if self._memory_conn is None:
                 self._memory_conn = sqlite3.connect(":memory:")
@@ -36,6 +46,18 @@ class Database:
             return self._memory_conn
 
         assert isinstance(self.db_path, Path)
+        if is_ro:
+            if not self.db_path.is_file():
+                raise StorageError(f"Database file does not exist: {self.db_path}")
+            uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
+            try:
+                conn = sqlite3.connect(uri, uri=True)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA foreign_keys = ON;")
+                return conn
+            except sqlite3.Error as exc:
+                raise StorageError(f"Failed to open database in read-only mode: {exc}") from exc
+
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         conn = sqlite3.connect(str(self.db_path))
@@ -45,18 +67,23 @@ class Database:
         return conn
 
     @contextmanager
-    def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
+    def get_connection(
+        self, read_only: bool | None = None
+    ) -> Generator[sqlite3.Connection, None, None]:
         """Context manager providing a transactional connection.
 
-        Automatically commits on normal completion, rolls back on exception,
-        and closes file-based connections when exiting.
+        Automatically commits on normal completion (when read-write), rolls back
+        on exception, and closes file-based connections when exiting.
         """
-        conn = self._get_raw_connection()
+        is_ro = self.read_only if read_only is None else read_only
+        conn = self._get_raw_connection(read_only=is_ro)
         try:
             yield conn
-            conn.commit()
+            if not is_ro:
+                conn.commit()
         except Exception:
-            conn.rollback()
+            if not is_ro:
+                conn.rollback()
             raise
         finally:
             if not self.is_memory:
@@ -383,16 +410,53 @@ class Database:
     def count_articles(self) -> int:
         """Return total number of articles stored in the database."""
         sql = "SELECT COUNT(*) FROM articles;"
-        with self.get_connection() as conn:
-            cursor = conn.execute(sql)
-            return int(cursor.fetchone()[0])
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute(sql)
+                return int(cursor.fetchone()[0])
+        except sqlite3.Error as exc:
+            raise StorageError(f"Failed to count articles: {exc}") from exc
+
+    def count_sent_articles(self) -> int:
+        """Return count of articles marked as sent to Telegram."""
+        sql = "SELECT COUNT(*) FROM articles WHERE sent_to_telegram = 1;"
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute(sql)
+                return int(cursor.fetchone()[0])
+        except sqlite3.Error as exc:
+            raise StorageError(f"Failed to count sent articles: {exc}") from exc
 
     def count_unsent_articles(self, min_score: float = 0.0) -> int:
         """Return count of unsent articles meeting the threshold."""
         sql = "SELECT COUNT(*) FROM articles WHERE sent_to_telegram = 0 AND relevance_score >= ?;"
-        with self.get_connection() as conn:
-            cursor = conn.execute(sql, (min_score,))
-            return int(cursor.fetchone()[0])
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute(sql, (min_score,))
+                return int(cursor.fetchone()[0])
+        except sqlite3.Error as exc:
+            raise StorageError(f"Failed to count unsent articles: {exc}") from exc
+
+    def check_integrity(self) -> bool:
+        """Verify SQLite database integrity using PRAGMA integrity_check.
+
+        Returns True if the check passes with 'ok', False otherwise.
+
+        Raises:
+            StorageError: If the database file does not exist, cannot be queried,
+                or is corrupted.
+        """
+        if not self.is_memory and not Path(self.db_path).is_file():
+            raise StorageError(f"Database file does not exist: {self.db_path}")
+
+        sql = "PRAGMA integrity_check;"
+        try:
+            with self.get_connection(read_only=True) as conn:
+                cursor = conn.execute(sql)
+                row = cursor.fetchone()
+                return bool(row and row[0] == "ok")
+        except sqlite3.Error as exc:
+            raise StorageError(f"Database integrity check failed: {exc}") from exc
 
     @staticmethod
     def _row_to_article(row: sqlite3.Row) -> Article:

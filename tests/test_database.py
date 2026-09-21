@@ -265,3 +265,56 @@ def test_transaction_rollback_on_batch_error(temp_db: Database) -> None:
     # b1 should have rolled back
     assert temp_db.count_articles() == initial_count
     assert temp_db.get_article_by_id("batch-2") is None
+
+
+def test_count_sent_articles(temp_db: Database) -> None:
+    """Test counting sent articles."""
+    assert temp_db.count_sent_articles() == 0
+    a1 = Article(id="sent-1", title="Sent 1", url="https://example.com/s1", source="S", sent_to_telegram=True)
+    a2 = Article(id="unsent-1", title="Unsent 1", url="https://example.com/u1", source="S", sent_to_telegram=False)
+    temp_db.save_articles([a1, a2])
+    assert temp_db.count_sent_articles() == 1
+
+
+def test_check_integrity_healthy(temp_db: Database) -> None:
+    """Test that check_integrity returns True on an initialized database."""
+    assert temp_db.check_integrity() is True
+
+
+def test_check_integrity_nonexistent_file(tmp_path: Path) -> None:
+    """Test that check_integrity raises StorageError if the database file does not exist."""
+    db = Database(tmp_path / "missing.db")
+    with pytest.raises(StorageError, match="does not exist"):
+        db.check_integrity()
+
+
+def test_check_integrity_corrupted_file(tmp_path: Path) -> None:
+    """Test that check_integrity raises StorageError on a corrupted database file."""
+    corrupt_file = tmp_path / "corrupt.db"
+    corrupt_file.write_bytes(b"MALFORMED_SQLITE_HEADER_DATA")
+    db = Database(corrupt_file)
+    with pytest.raises(StorageError, match="integrity check failed"):
+        db.check_integrity()
+
+
+def test_database_read_only_mode_blocks_writes(tmp_path: Path) -> None:
+    """Test that a Database opened with read_only=True uses SQLite mode=ro and blocks writes."""
+    db_file = tmp_path / "ro_test.db"
+    write_db = Database(db_file)
+    write_db.init_db()
+
+    a1 = Article(id="ro-1", title="RO 1", url="https://example.com/ro1", source="S")
+    write_db.save_article(a1)
+
+    # Open with read_only=True
+    ro_db = Database(db_file, read_only=True)
+    assert ro_db.check_integrity() is True
+    assert ro_db.count_articles() == 1
+
+    # Attempting to write must fail at SQLite engine level with StorageError
+    a2 = Article(id="ro-2", title="RO 2", url="https://example.com/ro2", source="S")
+    with pytest.raises(StorageError, match="readonly database"):
+        ro_db.save_article(a2)
+
+    # Verify article was not written
+    assert write_db.count_articles() == 1

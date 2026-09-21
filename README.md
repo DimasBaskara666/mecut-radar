@@ -169,6 +169,16 @@ If `DRY_RUN=true` is set in your `.env` file, running the entry point directly i
 python -m mecut_radar.main
 ```
 
+## CLI / Status
+
+MECUT Radar provides a dedicated command to inspect system health, configuration, and database article statistics:
+
+```bash
+python -m mecut_radar.main --status
+```
+
+This command is read-only and intended for local inspection and health monitoring. It performs a lightweight SQLite integrity check and reports current metrics without fetching from external sources, executing the ingestion pipeline, or sending Telegram messages.
+
 ## Telegram Notification Setup
 
 To receive notifications:
