@@ -77,6 +77,9 @@ def test_main_status_reports_state_correctly(
     a3 = Article(id="art-3", title="Unsent Filtered", url="https://example.com/3", source="rss", relevance_score=1.0, sent_to_telegram=False)
     db.save_articles([a1, a2, a3])
 
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.setattr("mecut_radar.config.loader.load_dotenv", lambda **kwargs: None)
     monkeypatch.setenv("DATABASE_PATH", str(temp_db))
     monkeypatch.setenv("APP_ENV", "testing")
     monkeypatch.setenv("DRY_RUN", "false")
@@ -288,4 +291,48 @@ def test_main_pipeline_run_failure(
 
     assert code == 1
     assert "Pipeline run failed" in caplog.text
+
+
+def test_main_status_succeeds_without_telegram_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test that --status works when DRY_RUN=false and Telegram credentials are completely absent."""
+    from mecut_radar.storage.database import Database
+
+    temp_db = tmp_path / "status_no_creds.db"
+    db = Database(temp_db)
+    db.init_db()
+
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.setattr("mecut_radar.config.loader.load_dotenv", lambda **kwargs: None)
+    monkeypatch.setenv("DATABASE_PATH", str(temp_db))
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv("APP_ENV", "testing")
+
+    code = main(["--status"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "MECUT Radar Status & Health" in out
+    assert "Dry Run:             false" in out
+    assert "Health:              ok" in out
+
+
+def test_main_pipeline_rejects_missing_telegram_credentials_when_dry_run_false(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that normal pipeline execution with DRY_RUN=false rejects missing Telegram credentials."""
+    temp_db = tmp_path / "normal_run_no_creds.db"
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.setattr("mecut_radar.config.loader.load_dotenv", lambda **kwargs: None)
+    monkeypatch.setenv("DATABASE_PATH", str(temp_db))
+    monkeypatch.setenv("DRY_RUN", "false")
+
+    with caplog.at_level(logging.ERROR, logger="mecut_radar"):
+        code = main(None)
+
+    assert code == 1
+    assert "Missing required Telegram credentials" in caplog.text
 

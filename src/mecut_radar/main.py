@@ -133,7 +133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.status:
         try:
-            config = load_config()
+            config = load_config(require_telegram=False)
         except ConfigurationError as exc:
             logger.error("Configuration error: %s", exc)
             print(f"Configuration error: {exc}", file=sys.stderr)
